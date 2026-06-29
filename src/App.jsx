@@ -89,6 +89,7 @@ export default function App() {
   const [view, setView] = useState("trend");
   const [detailLevel, setDetailLevel] = useState("group");
   const [rangeMonths, setRangeMonths] = useState(12);
+  const [includeRealEstate, setIncludeRealEstate] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [saveStatus, setSaveStatus] = useState("idle");
   const [draft, setDraft] = useState(null);
@@ -134,42 +135,66 @@ export default function App() {
     return sortedRecords.filter((r) => new Date(r.date) >= cutoff);
   }, [sortedRecords, rangeMonths, latest]);
 
+  const visibleFields = useMemo(
+    () => (includeRealEstate ? FIELDS : FIELDS.filter((f) => f.group !== "부동산")),
+    [includeRealEstate]
+  );
+  const visibleGroups = useMemo(
+    () => (includeRealEstate ? GROUP_ORDER : GROUP_ORDER.filter((g) => g !== "부동산")),
+    [includeRealEstate]
+  );
+  const visibleFieldKeys = useMemo(() => visibleFields.map((f) => f.key), [visibleFields]);
+
+  function visibleTotalOf(rec) {
+    return visibleFieldKeys.reduce((sum, k) => sum + (Number(rec[k]) || 0), 0);
+  }
+  function visibleGroupTotalsOf(rec) {
+    const totals = {};
+    visibleGroups.forEach((g) => (totals[g] = 0));
+    visibleFields.forEach((f) => {
+      totals[f.group] += Number(rec[f.key]) || 0;
+    });
+    return totals;
+  }
+
   const chartData = useMemo(
     () =>
       filteredRecords.map((r) => {
-        const row = { date: r.date, label: formatDateLabel(r.date), total: totalOf(r) };
+        const row = { date: r.date, label: formatDateLabel(r.date), total: visibleTotalOf(r) };
         if (detailLevel === "group") {
-          Object.assign(row, groupTotalsOf(r));
+          Object.assign(row, visibleGroupTotalsOf(r));
         } else {
-          FIELD_KEYS.forEach((k) => (row[k] = Number(r[k]) || 0));
+          visibleFieldKeys.forEach((k) => (row[k] = Number(r[k]) || 0));
         }
         return row;
       }),
-    [filteredRecords, detailLevel]
+    [filteredRecords, detailLevel, visibleFieldKeys, visibleGroups]
   );
 
   const activeSeries = useMemo(() => {
     if (detailLevel === "group") {
-      return GROUP_ORDER.map((g) => ({ key: g, label: g, color: GROUP_COLOR[g] }));
+      return visibleGroups.map((g) => ({ key: g, label: g, color: GROUP_COLOR[g] }));
     }
-    return FIELDS.map((f) => ({ key: f.key, label: f.label, color: f.color }));
-  }, [detailLevel]);
+    return visibleFields.map((f) => ({ key: f.key, label: f.label, color: f.color }));
+  }, [detailLevel, visibleGroups, visibleFields]);
+
+  const chartTotal = chartData.length ? chartData[chartData.length - 1].total : 0;
 
   const pieData = useMemo(() => {
     if (!latest) return [];
     if (detailLevel === "group") {
-      const totals = groupTotalsOf(latest);
-      return GROUP_ORDER.map((g) => ({ name: g, key: g, value: totals[g], color: GROUP_COLOR[g] })).filter(
+      const totals = visibleGroupTotalsOf(latest);
+      return visibleGroups.map((g) => ({ name: g, key: g, value: totals[g], color: GROUP_COLOR[g] })).filter(
         (d) => d.value > 0
       );
     }
-    return FIELDS.map((f) => ({
+    return visibleFields.map((f) => ({
       name: f.label,
       key: f.key,
       value: Number(latest[f.key]) || 0,
       color: f.color,
     })).filter((d) => d.value > 0);
-  }, [latest, detailLevel]);
+  }, [latest, detailLevel, visibleGroups, visibleFields]);
 
   const handleDraftChange = (key, value) => {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -261,7 +286,10 @@ export default function App() {
         <TabButton active={view === "history"} onClick={() => setView("history")} label="기록" />
       </div>
 
-      <DetailToggle detailLevel={detailLevel} setDetailLevel={setDetailLevel} />
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.5rem" }}>
+        <DetailToggle detailLevel={detailLevel} setDetailLevel={setDetailLevel} />
+        <RealEstateToggle includeRealEstate={includeRealEstate} setIncludeRealEstate={setIncludeRealEstate} />
+      </div>
 
       {view === "trend" && (
         <TrendView
@@ -271,7 +299,7 @@ export default function App() {
           setRangeMonths={setRangeMonths}
         />
       )}
-      {view === "mix" && <MixView pieData={pieData} latestTotal={latestTotal} />}
+      {view === "mix" && <MixView pieData={pieData} latestTotal={chartTotal} />}
       {view === "history" && <HistoryView records={sortedRecords} />}
 
       <button style={styles.fab} onClick={openAddForm} aria-label="이번 달 자산 입력">
@@ -346,6 +374,28 @@ function DetailToggle({ detailLevel, setDetailLevel }) {
           style={{ ...styles.smallToggleButton, ...(detailLevel === "detail" ? styles.smallToggleButtonActive : {}) }}
         >
           세부 계좌
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RealEstateToggle({ includeRealEstate, setIncludeRealEstate }) {
+  return (
+    <div style={styles.detailToggleRow}>
+      <span style={styles.detailToggleLabel}>부동산 표시</span>
+      <div style={styles.detailToggleButtons}>
+        <button
+          onClick={() => setIncludeRealEstate(true)}
+          style={{ ...styles.smallToggleButton, ...(includeRealEstate ? styles.smallToggleButtonActive : {}) }}
+        >
+          포함
+        </button>
+        <button
+          onClick={() => setIncludeRealEstate(false)}
+          style={{ ...styles.smallToggleButton, ...(!includeRealEstate ? styles.smallToggleButtonActive : {}) }}
+        >
+          금융자산만
         </button>
       </div>
     </div>
@@ -669,7 +719,6 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: "1rem",
   },
   detailToggleLabel: { fontSize: 12, color: "#888" },
   detailToggleButtons: { display: "flex", gap: 6 },
