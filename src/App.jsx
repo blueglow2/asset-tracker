@@ -28,15 +28,6 @@ const FIELDS = [
   { key: "real_estate", label: "부동산", group: "부동산", color: "#D85A30" },
 ];
 
-const GROUP_ORDER = ["주식·연금", "비트코인", "보험", "은행", "부동산"];
-const GROUP_COLOR = {
-  "주식·연금": "#1D9E75",
-  "비트코인": "#BA7517",
-  "보험": "#7F77DD",
-  "은행": "#378ADD",
-  "부동산": "#D85A30",
-};
-
 const FIELD_KEYS = FIELDS.map((f) => f.key);
 
 function formatWon(value) {
@@ -134,10 +125,10 @@ export default function App() {
     return sortedRecords.filter((r) => new Date(r.date) >= cutoff);
   }, [sortedRecords, rangeMonths, latest]);
 
-  // 그래프(추이)에는 항상 세부 계좌 단위로 표시하고, 비트코인은 별도 카드로 분리한다.
+  // 그래프(추이)에는 항상 세부 계좌 단위로 표시한다.
   // hiddenKeys에 들어있는 항목은 범례 클릭으로 그래프에서 숨겨진 상태.
   const graphFields = useMemo(
-    () => FIELDS.filter((f) => f.key !== "bitcoin" && !hiddenKeys.has(f.key)),
+    () => FIELDS.filter((f) => !hiddenKeys.has(f.key)),
     [hiddenKeys]
   );
   const graphFieldKeys = useMemo(() => graphFields.map((f) => f.key), [graphFields]);
@@ -162,17 +153,9 @@ export default function App() {
   );
 
   const allLegendSeries = useMemo(
-    () => FIELDS.filter((f) => f.key !== "bitcoin").map((f) => ({ key: f.key, label: f.label, color: f.color })),
+    () => FIELDS.map((f) => ({ key: f.key, label: f.label, color: f.color })),
     []
   );
-
-  const chartTotal = chartData.length ? chartData[chartData.length - 1].total : 0;
-
-  const bitcoinLatest = latest ? Number(latest.bitcoin) || 0 : 0;
-  const bitcoinPrevious = previous ? Number(previous.bitcoin) || 0 : null;
-  const bitcoinDiff = bitcoinPrevious !== null ? bitcoinLatest - bitcoinPrevious : null;
-  const bitcoinDiffPct =
-    bitcoinPrevious && bitcoinPrevious !== 0 ? (bitcoinDiff / bitcoinPrevious) * 100 : null;
 
   const toggleLegendKey = (key) => {
     setHiddenKeys((prev) => {
@@ -203,6 +186,8 @@ export default function App() {
     setDraft((d) => ({ ...d, [key]: value }));
   };
 
+  const [editingOriginalDate, setEditingOriginalDate] = useState(null);
+
   const handleAddRecord = async () => {
     setSaveStatus("saving");
     const payload = { record_date: draft.date };
@@ -210,6 +195,19 @@ export default function App() {
       const n = Number(String(draft[k]).replace(/,/g, ""));
       payload[k] = isNaN(n) ? 0 : n;
     });
+
+    // 날짜를 수정해서 원래 날짜와 달라진 경우, 기존 행을 지우고 새로 저장한다.
+    if (editingOriginalDate && editingOriginalDate !== draft.date) {
+      const { error: deleteError } = await supabase
+        .from("asset_records")
+        .delete()
+        .eq("record_date", editingOriginalDate);
+      if (deleteError) {
+        setSaveStatus("error");
+        setError(deleteError.message);
+        return;
+      }
+    }
 
     const { error } = await supabase
       .from("asset_records")
@@ -223,6 +221,7 @@ export default function App() {
 
     setSaveStatus("saved");
     setShowAddForm(false);
+    setEditingOriginalDate(null);
     await fetchRecords();
     setTimeout(() => setSaveStatus("idle"), 1500);
   };
@@ -232,6 +231,15 @@ export default function App() {
     const init = { date: new Date().toISOString().slice(0, 10) };
     FIELD_KEYS.forEach((k) => (init[k] = String(base[k] ?? 0)));
     setDraft(init);
+    setEditingOriginalDate(null);
+    setShowAddForm(true);
+  };
+
+  const openEditForm = (record) => {
+    const init = { date: record.date };
+    FIELD_KEYS.forEach((k) => (init[k] = String(record[k] ?? 0)));
+    setDraft(init);
+    setEditingOriginalDate(record.date);
     setShowAddForm(true);
   };
 
@@ -298,13 +306,10 @@ export default function App() {
           toggleLegendKey={toggleLegendKey}
           rangeMonths={rangeMonths}
           setRangeMonths={setRangeMonths}
-          bitcoinLatest={bitcoinLatest}
-          bitcoinDiff={bitcoinDiff}
-          bitcoinDiffPct={bitcoinDiffPct}
         />
       )}
       {view === "mix" && <MixView pieData={pieData} latestTotal={latestTotal} />}
-      {view === "history" && <HistoryView records={sortedRecords} />}
+      {view === "history" && <HistoryView records={sortedRecords} onEdit={openEditForm} />}
 
       <button style={styles.fab} onClick={openAddForm} aria-label="이번 달 자산 입력">
         <span style={{ fontSize: 20, lineHeight: 1 }}>＋</span>
@@ -315,9 +320,13 @@ export default function App() {
         <AddRecordModal
           draft={draft}
           onChange={handleDraftChange}
-          onCancel={() => setShowAddForm(false)}
+          onCancel={() => {
+            setShowAddForm(false);
+            setEditingOriginalDate(null);
+          }}
           onSave={handleAddRecord}
           saveStatus={saveStatus}
+          isEditing={!!editingOriginalDate}
         />
       )}
     </div>
@@ -421,9 +430,6 @@ function TrendView({
   toggleLegendKey,
   rangeMonths,
   setRangeMonths,
-  bitcoinLatest,
-  bitcoinDiff,
-  bitcoinDiffPct,
 }) {
   return (
     <div>
@@ -434,8 +440,8 @@ function TrendView({
             <defs>
               {activeSeries.map((s) => (
                 <linearGradient id={`grad-${s.key}`} key={s.key} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={s.color} stopOpacity={0.5} />
-                  <stop offset="100%" stopColor={s.color} stopOpacity={0.05} />
+                  <stop offset="0%" stopColor={s.color} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
                 </linearGradient>
               ))}
             </defs>
@@ -461,41 +467,16 @@ function TrendView({
                 key={s.key}
                 type="monotone"
                 dataKey={s.key}
-                stackId="1"
                 stroke={s.color}
-                strokeWidth={1.5}
+                strokeWidth={2}
                 fill={`url(#grad-${s.key})`}
+                dot={false}
               />
             ))}
           </AreaChart>
         </ResponsiveContainer>
       </div>
       <ToggleLegend allLegendSeries={allLegendSeries} hiddenKeys={hiddenKeys} toggleLegendKey={toggleLegendKey} />
-      {bitcoinLatest > 0 && (
-        <BitcoinCard latest={bitcoinLatest} diff={bitcoinDiff} diffPct={bitcoinDiffPct} />
-      )}
-    </div>
-  );
-}
-
-function BitcoinCard({ latest, diff, diffPct }) {
-  const positive = diff !== null && diff >= 0;
-  return (
-    <div style={styles.bitcoinCard}>
-      <div style={styles.bitcoinCardLeft}>
-        <span style={{ width: 10, height: 10, borderRadius: 2, background: "#BA7517", display: "inline-block" }}></span>
-        <span style={{ fontSize: 13, color: "#888" }}>비트코인 (업비트)</span>
-        <span style={styles.bitcoinNote}>그래프 제외 · 별도 표시</span>
-      </div>
-      <div style={styles.bitcoinCardRight}>
-        <span style={{ fontSize: 16, fontWeight: 600 }}>{formatWonFull(latest)}</span>
-        {diff !== null && (
-          <span style={{ fontSize: 12, color: positive ? "#1D9E75" : "#D04A3C" }}>
-            {positive ? "▲" : "▼"} {formatWon(diff)}
-            {diffPct !== null ? ` (${positive ? "+" : ""}${diffPct.toFixed(1)}%)` : ""}
-          </span>
-        )}
-      </div>
     </div>
   );
 }
@@ -503,29 +484,33 @@ function BitcoinCard({ latest, diff, diffPct }) {
 function ToggleLegend({ allLegendSeries, hiddenKeys, toggleLegendKey }) {
   return (
     <div style={styles.toggleLegendWrap}>
-      <div style={styles.toggleLegendHint}>색을 눌러 그래프에서 켜고 끌 수 있어요</div>
+      <div style={styles.toggleLegendHint}>항목을 눌러 그래프에 표시하거나 숨길 수 있어요</div>
       <div style={styles.legendWrap}>
         {allLegendSeries.map((s) => {
-          const isHidden = hiddenKeys.has(s.key);
+          const isOn = !hiddenKeys.has(s.key);
           return (
             <button
               key={s.key}
               onClick={() => toggleLegendKey(s.key)}
               style={{
                 ...styles.legendItemButton,
-                opacity: isHidden ? 0.4 : 1,
+                ...(isOn ? styles.legendItemButtonActive : {}),
               }}
             >
               <span
                 style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: 2,
-                  background: isHidden ? "#ddd" : s.color,
-                  display: "inline-block",
+                  ...styles.legendCheckbox,
+                  background: isOn ? s.color : "#fff",
+                  borderColor: isOn ? s.color : "#ccc",
                 }}
-              ></span>
-              <span style={{ textDecoration: isHidden ? "line-through" : "none" }}>{s.label}</span>
+              >
+                {isOn && (
+                  <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                    <path d="M1 3.5L3.2 5.7L8 1" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </span>
+              <span style={{ color: isOn ? "#2a2825" : "#aaa" }}>{s.label}</span>
             </button>
           );
         })}
@@ -595,7 +580,7 @@ function MixView({ pieData, latestTotal }) {
   );
 }
 
-function HistoryView({ records }) {
+function HistoryView({ records, onEdit }) {
   const reversed = useMemo(() => [...records].reverse(), [records]);
   const [expandedDate, setExpandedDate] = useState(null);
 
@@ -654,6 +639,9 @@ function HistoryView({ records }) {
                     </div>
                   );
                 })}
+                <button style={styles.historyEditButton} onClick={() => onEdit(r)}>
+                  이 기록 수정하기
+                </button>
               </div>
             )}
           </div>
@@ -663,13 +651,13 @@ function HistoryView({ records }) {
   );
 }
 
-function AddRecordModal({ draft, onChange, onCancel, onSave, saveStatus }) {
+function AddRecordModal({ draft, onChange, onCancel, onSave, saveStatus, isEditing }) {
   let lastGroup = null;
   return (
     <div style={styles.modalOverlay}>
       <div style={styles.modalCard}>
         <div style={styles.modalHeader}>
-          <span style={{ fontSize: 16, fontWeight: 500 }}>이번 달 자산 입력</span>
+          <span style={{ fontSize: 16, fontWeight: 500 }}>{isEditing ? "기록 수정" : "이번 달 자산 입력"}</span>
           <button onClick={onCancel} style={styles.iconButton} aria-label="닫기">
             ✕
           </button>
@@ -712,7 +700,7 @@ function AddRecordModal({ draft, onChange, onCancel, onSave, saveStatus }) {
         )}
 
         <button onClick={onSave} style={styles.saveButton} disabled={saveStatus === "saving"}>
-          {saveStatus === "saving" ? "저장 중..." : "저장"}
+          {saveStatus === "saving" ? "저장 중..." : isEditing ? "수정 내용 저장" : "저장"}
         </button>
       </div>
     </div>
@@ -837,34 +825,35 @@ const styles = {
     borderTop: "1px solid #eee",
     fontWeight: 500,
   },
-  legendWrap: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8 },
+  legendWrap: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 },
   toggleLegendWrap: { marginTop: 12 },
   toggleLegendHint: { fontSize: 11, color: "#bbb", marginBottom: 6 },
   legendItemButton: {
     display: "flex",
     alignItems: "center",
-    gap: 5,
+    gap: 6,
     fontSize: 12,
-    color: "#666",
-    background: "#f7f5f1",
-    border: "none",
+    color: "#aaa",
+    background: "#fff",
+    border: "1px solid #e8e4dc",
     borderRadius: 999,
-    padding: "5px 10px",
+    padding: "5px 10px 5px 6px",
     cursor: "pointer",
   },
-  bitcoinCard: {
+  legendItemButtonActive: {
+    background: "#f7f5f1",
+    border: "1px solid #e8e4dc",
+  },
+  legendCheckbox: {
+    width: 16,
+    height: 16,
+    borderRadius: "50%",
+    border: "1.5px solid #ccc",
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 14,
-    padding: "0.85rem 1rem",
-    background: "#fdf8ef",
-    border: "1px solid #f0e4cc",
-    borderRadius: 12,
+    justifyContent: "center",
+    flexShrink: 0,
   },
-  bitcoinCardLeft: { display: "flex", alignItems: "center", gap: 6 },
-  bitcoinNote: { fontSize: 11, color: "#bbb", marginLeft: 4 },
-  bitcoinCardRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 },
   legendItem: { display: "flex", alignItems: "center", gap: 5 },
   pieCenterLabel: {
     position: "absolute",
@@ -911,6 +900,17 @@ const styles = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
+  },
+  historyEditButton: {
+    marginTop: 8,
+    width: "100%",
+    padding: "9px 0",
+    background: "#fff",
+    border: "1px solid #e8e4dc",
+    borderRadius: 8,
+    fontSize: 12,
+    color: "#666",
+    cursor: "pointer",
   },
   fab: {
     position: "fixed",
