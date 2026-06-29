@@ -157,28 +157,56 @@ export default function App() {
     return totals;
   }
 
+  const graphFields = useMemo(
+    () => visibleFields.filter((f) => f.key !== "bitcoin"),
+    [visibleFields]
+  );
+  const graphGroups = useMemo(
+    () => visibleGroups.filter((g) => g !== "비트코인"),
+    [visibleGroups]
+  );
+  const graphFieldKeys = useMemo(() => graphFields.map((f) => f.key), [graphFields]);
+
+  function graphTotalOf(rec) {
+    return graphFieldKeys.reduce((sum, k) => sum + (Number(rec[k]) || 0), 0);
+  }
+  function graphGroupTotalsOf(rec) {
+    const totals = {};
+    graphGroups.forEach((g) => (totals[g] = 0));
+    graphFields.forEach((f) => {
+      totals[f.group] += Number(rec[f.key]) || 0;
+    });
+    return totals;
+  }
+
   const chartData = useMemo(
     () =>
       filteredRecords.map((r) => {
-        const row = { date: r.date, label: formatDateLabel(r.date), total: visibleTotalOf(r) };
+        const row = { date: r.date, label: formatDateLabel(r.date), total: graphTotalOf(r) };
         if (detailLevel === "group") {
-          Object.assign(row, visibleGroupTotalsOf(r));
+          Object.assign(row, graphGroupTotalsOf(r));
         } else {
-          visibleFieldKeys.forEach((k) => (row[k] = Number(r[k]) || 0));
+          graphFieldKeys.forEach((k) => (row[k] = Number(r[k]) || 0));
         }
         return row;
       }),
-    [filteredRecords, detailLevel, visibleFieldKeys, visibleGroups]
+    [filteredRecords, detailLevel, graphFieldKeys, graphGroups]
   );
 
   const activeSeries = useMemo(() => {
     if (detailLevel === "group") {
-      return visibleGroups.map((g) => ({ key: g, label: g, color: GROUP_COLOR[g] }));
+      return graphGroups.map((g) => ({ key: g, label: g, color: GROUP_COLOR[g] }));
     }
-    return visibleFields.map((f) => ({ key: f.key, label: f.label, color: f.color }));
-  }, [detailLevel, visibleGroups, visibleFields]);
+    return graphFields.map((f) => ({ key: f.key, label: f.label, color: f.color }));
+  }, [detailLevel, graphGroups, graphFields]);
 
   const chartTotal = chartData.length ? chartData[chartData.length - 1].total : 0;
+
+  const bitcoinLatest = latest ? Number(latest.bitcoin) || 0 : 0;
+  const bitcoinPrevious = previous ? Number(previous.bitcoin) || 0 : null;
+  const bitcoinDiff = bitcoinPrevious !== null ? bitcoinLatest - bitcoinPrevious : null;
+  const bitcoinDiffPct =
+    bitcoinPrevious && bitcoinPrevious !== 0 ? (bitcoinDiff / bitcoinPrevious) * 100 : null;
 
   const pieData = useMemo(() => {
     if (!latest) return [];
@@ -297,6 +325,9 @@ export default function App() {
           activeSeries={activeSeries}
           rangeMonths={rangeMonths}
           setRangeMonths={setRangeMonths}
+          bitcoinLatest={bitcoinLatest}
+          bitcoinDiff={bitcoinDiff}
+          bitcoinDiffPct={bitcoinDiffPct}
         />
       )}
       {view === "mix" && <MixView pieData={pieData} latestTotal={chartTotal} />}
@@ -453,7 +484,7 @@ function CustomTooltip({ active, payload, label, activeSeries }) {
   );
 }
 
-function TrendView({ chartData, activeSeries, rangeMonths, setRangeMonths }) {
+function TrendView({ chartData, activeSeries, rangeMonths, setRangeMonths, bitcoinLatest, bitcoinDiff, bitcoinDiffPct }) {
   return (
     <div>
       <RangeSelector rangeMonths={rangeMonths} setRangeMonths={setRangeMonths} />
@@ -500,6 +531,31 @@ function TrendView({ chartData, activeSeries, rangeMonths, setRangeMonths }) {
         </ResponsiveContainer>
       </div>
       <Legend activeSeries={activeSeries} />
+      {bitcoinLatest > 0 && (
+        <BitcoinCard latest={bitcoinLatest} diff={bitcoinDiff} diffPct={bitcoinDiffPct} />
+      )}
+    </div>
+  );
+}
+
+function BitcoinCard({ latest, diff, diffPct }) {
+  const positive = diff !== null && diff >= 0;
+  return (
+    <div style={styles.bitcoinCard}>
+      <div style={styles.bitcoinCardLeft}>
+        <span style={{ width: 10, height: 10, borderRadius: 2, background: "#BA7517", display: "inline-block" }}></span>
+        <span style={{ fontSize: 13, color: "#888" }}>비트코인 (업비트)</span>
+        <span style={styles.bitcoinNote}>그래프 제외 · 별도 표시</span>
+      </div>
+      <div style={styles.bitcoinCardRight}>
+        <span style={{ fontSize: 16, fontWeight: 600 }}>{formatWonFull(latest)}</span>
+        {diff !== null && (
+          <span style={{ fontSize: 12, color: positive ? "#1D9E75" : "#D04A3C" }}>
+            {positive ? "▲" : "▼"} {formatWon(diff)}
+            {diffPct !== null ? ` (${positive ? "+" : ""}${diffPct.toFixed(1)}%)` : ""}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -773,6 +829,19 @@ const styles = {
     fontWeight: 500,
   },
   legendWrap: { display: "flex", flexWrap: "wrap", gap: 12, marginTop: 12, fontSize: 12, color: "#888" },
+  bitcoinCard: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 14,
+    padding: "0.85rem 1rem",
+    background: "#fdf8ef",
+    border: "1px solid #f0e4cc",
+    borderRadius: 12,
+  },
+  bitcoinCardLeft: { display: "flex", alignItems: "center", gap: 6 },
+  bitcoinNote: { fontSize: 11, color: "#bbb", marginLeft: 4 },
+  bitcoinCardRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 },
   legendItem: { display: "flex", alignItems: "center", gap: 5 },
   pieCenterLabel: {
     position: "absolute",
