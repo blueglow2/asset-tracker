@@ -87,9 +87,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState("trend");
-  const [detailLevel, setDetailLevel] = useState("group");
   const [rangeMonths, setRangeMonths] = useState(12);
-  const [includeRealEstate, setIncludeRealEstate] = useState(true);
+  const [hiddenKeys, setHiddenKeys] = useState(() => new Set());
   const [showAddForm, setShowAddForm] = useState(false);
   const [saveStatus, setSaveStatus] = useState("idle");
   const [draft, setDraft] = useState(null);
@@ -135,70 +134,37 @@ export default function App() {
     return sortedRecords.filter((r) => new Date(r.date) >= cutoff);
   }, [sortedRecords, rangeMonths, latest]);
 
-  const visibleFields = useMemo(
-    () => (includeRealEstate ? FIELDS : FIELDS.filter((f) => f.group !== "부동산")),
-    [includeRealEstate]
-  );
-  const visibleGroups = useMemo(
-    () => (includeRealEstate ? GROUP_ORDER : GROUP_ORDER.filter((g) => g !== "부동산")),
-    [includeRealEstate]
-  );
-  const visibleFieldKeys = useMemo(() => visibleFields.map((f) => f.key), [visibleFields]);
-
-  function visibleTotalOf(rec) {
-    return visibleFieldKeys.reduce((sum, k) => sum + (Number(rec[k]) || 0), 0);
-  }
-  function visibleGroupTotalsOf(rec) {
-    const totals = {};
-    visibleGroups.forEach((g) => (totals[g] = 0));
-    visibleFields.forEach((f) => {
-      totals[f.group] += Number(rec[f.key]) || 0;
-    });
-    return totals;
-  }
-
+  // 그래프(추이)에는 항상 세부 계좌 단위로 표시하고, 비트코인은 별도 카드로 분리한다.
+  // hiddenKeys에 들어있는 항목은 범례 클릭으로 그래프에서 숨겨진 상태.
   const graphFields = useMemo(
-    () => visibleFields.filter((f) => f.key !== "bitcoin"),
-    [visibleFields]
-  );
-  const graphGroups = useMemo(
-    () => visibleGroups.filter((g) => g !== "비트코인"),
-    [visibleGroups]
+    () => FIELDS.filter((f) => f.key !== "bitcoin" && !hiddenKeys.has(f.key)),
+    [hiddenKeys]
   );
   const graphFieldKeys = useMemo(() => graphFields.map((f) => f.key), [graphFields]);
 
   function graphTotalOf(rec) {
     return graphFieldKeys.reduce((sum, k) => sum + (Number(rec[k]) || 0), 0);
   }
-  function graphGroupTotalsOf(rec) {
-    const totals = {};
-    graphGroups.forEach((g) => (totals[g] = 0));
-    graphFields.forEach((f) => {
-      totals[f.group] += Number(rec[f.key]) || 0;
-    });
-    return totals;
-  }
 
   const chartData = useMemo(
     () =>
       filteredRecords.map((r) => {
         const row = { date: r.date, label: formatDateLabel(r.date), total: graphTotalOf(r) };
-        if (detailLevel === "group") {
-          Object.assign(row, graphGroupTotalsOf(r));
-        } else {
-          graphFieldKeys.forEach((k) => (row[k] = Number(r[k]) || 0));
-        }
+        graphFieldKeys.forEach((k) => (row[k] = Number(r[k]) || 0));
         return row;
       }),
-    [filteredRecords, detailLevel, graphFieldKeys, graphGroups]
+    [filteredRecords, graphFieldKeys]
   );
 
-  const activeSeries = useMemo(() => {
-    if (detailLevel === "group") {
-      return graphGroups.map((g) => ({ key: g, label: g, color: GROUP_COLOR[g] }));
-    }
-    return graphFields.map((f) => ({ key: f.key, label: f.label, color: f.color }));
-  }, [detailLevel, graphGroups, graphFields]);
+  const activeSeries = useMemo(
+    () => graphFields.map((f) => ({ key: f.key, label: f.label, color: f.color })),
+    [graphFields]
+  );
+
+  const allLegendSeries = useMemo(
+    () => FIELDS.filter((f) => f.key !== "bitcoin").map((f) => ({ key: f.key, label: f.label, color: f.color })),
+    []
+  );
 
   const chartTotal = chartData.length ? chartData[chartData.length - 1].total : 0;
 
@@ -208,21 +174,30 @@ export default function App() {
   const bitcoinDiffPct =
     bitcoinPrevious && bitcoinPrevious !== 0 ? (bitcoinDiff / bitcoinPrevious) * 100 : null;
 
+  const toggleLegendKey = (key) => {
+    setHiddenKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const pieData = useMemo(() => {
     if (!latest) return [];
-    if (detailLevel === "group") {
-      const totals = visibleGroupTotalsOf(latest);
-      return visibleGroups.map((g) => ({ name: g, key: g, value: totals[g], color: GROUP_COLOR[g] })).filter(
-        (d) => d.value > 0
-      );
-    }
-    return visibleFields.map((f) => ({
-      name: f.label,
-      key: f.key,
-      value: Number(latest[f.key]) || 0,
-      color: f.color,
-    })).filter((d) => d.value > 0);
-  }, [latest, detailLevel, visibleGroups, visibleFields]);
+    return FIELDS.map((f) => {
+      const value = Number(latest[f.key]) || 0;
+      const prevValue = previous ? Number(previous[f.key]) || 0 : null;
+      const itemDiff = prevValue !== null ? value - prevValue : null;
+      return {
+        name: f.label,
+        key: f.key,
+        value,
+        diff: itemDiff,
+        color: f.color,
+      };
+    }).filter((d) => d.value > 0);
+  }, [latest, previous]);
 
   const handleDraftChange = (key, value) => {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -314,15 +289,13 @@ export default function App() {
         <TabButton active={view === "history"} onClick={() => setView("history")} label="기록" />
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.5rem" }}>
-        <DetailToggle detailLevel={detailLevel} setDetailLevel={setDetailLevel} />
-        <RealEstateToggle includeRealEstate={includeRealEstate} setIncludeRealEstate={setIncludeRealEstate} />
-      </div>
-
       {view === "trend" && (
         <TrendView
           chartData={chartData}
           activeSeries={activeSeries}
+          allLegendSeries={allLegendSeries}
+          hiddenKeys={hiddenKeys}
+          toggleLegendKey={toggleLegendKey}
           rangeMonths={rangeMonths}
           setRangeMonths={setRangeMonths}
           bitcoinLatest={bitcoinLatest}
@@ -330,7 +303,7 @@ export default function App() {
           bitcoinDiffPct={bitcoinDiffPct}
         />
       )}
-      {view === "mix" && <MixView pieData={pieData} latestTotal={chartTotal} />}
+      {view === "mix" && <MixView pieData={pieData} latestTotal={latestTotal} />}
       {view === "history" && <HistoryView records={sortedRecords} />}
 
       <button style={styles.fab} onClick={openAddForm} aria-label="이번 달 자산 입력">
@@ -389,50 +362,6 @@ function TabButton({ active, onClick, label }) {
   );
 }
 
-function DetailToggle({ detailLevel, setDetailLevel }) {
-  return (
-    <div style={styles.detailToggleRow}>
-      <span style={styles.detailToggleLabel}>보기 단위</span>
-      <div style={styles.detailToggleButtons}>
-        <button
-          onClick={() => setDetailLevel("group")}
-          style={{ ...styles.smallToggleButton, ...(detailLevel === "group" ? styles.smallToggleButtonActive : {}) }}
-        >
-          큰 분류
-        </button>
-        <button
-          onClick={() => setDetailLevel("detail")}
-          style={{ ...styles.smallToggleButton, ...(detailLevel === "detail" ? styles.smallToggleButtonActive : {}) }}
-        >
-          세부 계좌
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function RealEstateToggle({ includeRealEstate, setIncludeRealEstate }) {
-  return (
-    <div style={styles.detailToggleRow}>
-      <span style={styles.detailToggleLabel}>부동산 표시</span>
-      <div style={styles.detailToggleButtons}>
-        <button
-          onClick={() => setIncludeRealEstate(true)}
-          style={{ ...styles.smallToggleButton, ...(includeRealEstate ? styles.smallToggleButtonActive : {}) }}
-        >
-          포함
-        </button>
-        <button
-          onClick={() => setIncludeRealEstate(false)}
-          style={{ ...styles.smallToggleButton, ...(!includeRealEstate ? styles.smallToggleButtonActive : {}) }}
-        >
-          금융자산만
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function RangeSelector({ rangeMonths, setRangeMonths }) {
   const options = [
     { label: "6개월", value: 6 },
@@ -484,7 +413,18 @@ function CustomTooltip({ active, payload, label, activeSeries }) {
   );
 }
 
-function TrendView({ chartData, activeSeries, rangeMonths, setRangeMonths, bitcoinLatest, bitcoinDiff, bitcoinDiffPct }) {
+function TrendView({
+  chartData,
+  activeSeries,
+  allLegendSeries,
+  hiddenKeys,
+  toggleLegendKey,
+  rangeMonths,
+  setRangeMonths,
+  bitcoinLatest,
+  bitcoinDiff,
+  bitcoinDiffPct,
+}) {
   return (
     <div>
       <RangeSelector rangeMonths={rangeMonths} setRangeMonths={setRangeMonths} />
@@ -530,7 +470,7 @@ function TrendView({ chartData, activeSeries, rangeMonths, setRangeMonths, bitco
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      <Legend activeSeries={activeSeries} />
+      <ToggleLegend allLegendSeries={allLegendSeries} hiddenKeys={hiddenKeys} toggleLegendKey={toggleLegendKey} />
       {bitcoinLatest > 0 && (
         <BitcoinCard latest={bitcoinLatest} diff={bitcoinDiff} diffPct={bitcoinDiffPct} />
       )}
@@ -560,15 +500,36 @@ function BitcoinCard({ latest, diff, diffPct }) {
   );
 }
 
-function Legend({ activeSeries }) {
+function ToggleLegend({ allLegendSeries, hiddenKeys, toggleLegendKey }) {
   return (
-    <div style={styles.legendWrap}>
-      {activeSeries.map((s) => (
-        <span key={s.key} style={styles.legendItem}>
-          <span style={{ width: 10, height: 10, borderRadius: 2, background: s.color, display: "inline-block" }}></span>
-          {s.label}
-        </span>
-      ))}
+    <div style={styles.toggleLegendWrap}>
+      <div style={styles.toggleLegendHint}>색을 눌러 그래프에서 켜고 끌 수 있어요</div>
+      <div style={styles.legendWrap}>
+        {allLegendSeries.map((s) => {
+          const isHidden = hiddenKeys.has(s.key);
+          return (
+            <button
+              key={s.key}
+              onClick={() => toggleLegendKey(s.key)}
+              style={{
+                ...styles.legendItemButton,
+                opacity: isHidden ? 0.4 : 1,
+              }}
+            >
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 2,
+                  background: isHidden ? "#ddd" : s.color,
+                  display: "inline-block",
+                }}
+              ></span>
+              <span style={{ textDecoration: isHidden ? "line-through" : "none" }}>{s.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -617,7 +578,15 @@ function MixView({ pieData, latestTotal }) {
                 <div style={styles.mixBarTrack}>
                   <div style={{ ...styles.mixBarFill, width: `${pct}%`, background: d.color }}></div>
                 </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{formatWonFull(d.value)}</div>
+                <div style={{ ...styles.mixRowTop, marginTop: 2 }}>
+                  <div style={{ fontSize: 12, color: "#888" }}>{formatWonFull(d.value)}</div>
+                  {d.diff !== null && d.diff !== 0 && (
+                    <div style={{ fontSize: 12, color: d.diff >= 0 ? "#1D9E75" : "#D04A3C" }}>
+                      {d.diff >= 0 ? "+" : ""}
+                      {formatWon(d.diff)} (전월 대비)
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -628,6 +597,8 @@ function MixView({ pieData, latestTotal }) {
 
 function HistoryView({ records }) {
   const reversed = useMemo(() => [...records].reverse(), [records]);
+  const [expandedDate, setExpandedDate] = useState(null);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {reversed.map((r, idx) => {
@@ -635,18 +606,56 @@ function HistoryView({ records }) {
         const prevRec = reversed[idx + 1];
         const prevTotal = prevRec ? totalOf(prevRec) : null;
         const diff = prevTotal !== null ? total - prevTotal : null;
+        const isExpanded = expandedDate === r.date;
+        const itemsWithValue = FIELDS.filter((f) => (Number(r[f.key]) || 0) > 0);
+
         return (
           <div key={r.date} style={styles.historyCard}>
-            <div style={styles.historyTop}>
-              <span style={{ fontSize: 13, color: "#888" }}>{formatDateFull(r.date)}</span>
-              {diff !== null && (
-                <span style={{ fontSize: 12, color: diff >= 0 ? "#1D9E75" : "#D04A3C" }}>
-                  {diff >= 0 ? "+" : ""}
-                  {formatWon(diff)}
-                </span>
-              )}
-            </div>
-            <div style={{ fontSize: 17, fontWeight: 500 }}>{formatWonFull(total)}</div>
+            <button
+              style={styles.historyCardButton}
+              onClick={() => setExpandedDate(isExpanded ? null : r.date)}
+            >
+              <div style={styles.historyTop}>
+                <span style={{ fontSize: 13, color: "#888" }}>{formatDateFull(r.date)}</span>
+                {diff !== null && (
+                  <span style={{ fontSize: 12, color: diff >= 0 ? "#1D9E75" : "#D04A3C" }}>
+                    {diff >= 0 ? "+" : ""}
+                    {formatWon(diff)}
+                  </span>
+                )}
+              </div>
+              <div style={styles.historyBottomRow}>
+                <div style={{ fontSize: 17, fontWeight: 500 }}>{formatWonFull(total)}</div>
+                <span style={{ fontSize: 12, color: "#bbb" }}>{isExpanded ? "접기 ▲" : "세부 보기 ▼"}</span>
+              </div>
+            </button>
+
+            {isExpanded && (
+              <div style={styles.historyDetailList}>
+                {itemsWithValue.map((f) => {
+                  const value = Number(r[f.key]) || 0;
+                  const prevValue = prevRec ? Number(prevRec[f.key]) || 0 : null;
+                  const itemDiff = prevValue !== null ? value - prevValue : null;
+                  return (
+                    <div key={f.key} style={styles.historyDetailRow}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: f.color, display: "inline-block" }}></span>
+                        {f.label}
+                      </span>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                        <span style={{ fontSize: 13 }}>{formatWonFull(value)}</span>
+                        {itemDiff !== null && itemDiff !== 0 && (
+                          <span style={{ fontSize: 11, color: itemDiff >= 0 ? "#1D9E75" : "#D04A3C" }}>
+                            {itemDiff >= 0 ? "+" : ""}
+                            {formatWon(itemDiff)}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
@@ -828,7 +837,21 @@ const styles = {
     borderTop: "1px solid #eee",
     fontWeight: 500,
   },
-  legendWrap: { display: "flex", flexWrap: "wrap", gap: 12, marginTop: 12, fontSize: 12, color: "#888" },
+  legendWrap: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8 },
+  toggleLegendWrap: { marginTop: 12 },
+  toggleLegendHint: { fontSize: 11, color: "#bbb", marginBottom: 6 },
+  legendItemButton: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    fontSize: 12,
+    color: "#666",
+    background: "#f7f5f1",
+    border: "none",
+    borderRadius: 999,
+    padding: "5px 10px",
+    cursor: "pointer",
+  },
   bitcoinCard: {
     display: "flex",
     alignItems: "center",
@@ -864,9 +887,31 @@ const styles = {
     background: "#fff",
     border: "1px solid #f1efe9",
     borderRadius: 14,
+    overflow: "hidden",
+  },
+  historyCardButton: {
+    width: "100%",
+    background: "transparent",
+    border: "none",
     padding: "0.85rem 1rem",
+    cursor: "pointer",
+    textAlign: "left",
+    fontFamily: "inherit",
   },
   historyTop: { display: "flex", justifyContent: "space-between", marginBottom: 4 },
+  historyBottomRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline" },
+  historyDetailList: {
+    borderTop: "1px solid #f1efe9",
+    padding: "0.5rem 1rem 0.75rem",
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+  },
+  historyDetailRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
   fab: {
     position: "fixed",
     bottom: 20,
